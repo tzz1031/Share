@@ -1,10 +1,57 @@
-# Python-generated files
+# Python bytecode and build artifacts
 __pycache__/
 *.py[oc]
+*$py.class
 build/
 dist/
 wheels/
-*.egg-info
+*.egg-info/
+.eggs/
 
-# Virtual environments
-.venv
+# Virtual environments and local environment variables
+.venv/
+venv/
+env/
+ENV/
+.env
+.env.*
+!.env.example
+
+# Python tooling and test caches
+.cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# IDE and editor settings
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Operating system metadata
+.DS_Store
+Thumbs.db
+Desktop.ini
+*Zone.Identifier
+
+# Runtime files created by this project
+shared_folder/*
+!shared_folder/.gitkeep
+*.part
+*.tmp
+*.log
+
+# Local database files for later synchronization stages
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+*.sqlite-journal
