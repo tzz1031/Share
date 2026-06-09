@@ -7,6 +7,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
+from typing import Any
 
 
 logger = logging.getLogger(__name__)
@@ -20,6 +21,8 @@ class DiscoveredDevice:
     tcp_port: int
     status: str
     last_seen: float
+    tls_enabled: bool = False
+    certificate_fingerprint: str | None = None
 
 
 def get_local_ip() -> str:
@@ -49,6 +52,10 @@ class DiscoveryService:
         broadcast_ip: str = "255.255.255.255",
         broadcast_interval: float = 3.0,
         stale_after: float = 15.0,
+        tls_enabled: bool = False,
+        certificate_fingerprint: str | None = None,
+        audit_store: Any | None = None,
+        event_callback=None,
     ) -> None:
         self.device_id = device_id
         self.device_name = device_name
@@ -57,6 +64,10 @@ class DiscoveryService:
         self.broadcast_ip = broadcast_ip
         self.broadcast_interval = broadcast_interval
         self.stale_after = stale_after
+        self.tls_enabled = bool(tls_enabled)
+        self.certificate_fingerprint = certificate_fingerprint
+        self.audit_store = audit_store
+        self.event_callback = event_callback
         self._devices: dict[str, DiscoveredDevice] = {}
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
@@ -104,6 +115,8 @@ class DiscoveryService:
                     "ip": get_local_ip(),
                     "tcp_port": self.tcp_port,
                     "status": "online",
+                    "tls_enabled": self.tls_enabled,
+                    "certificate_fingerprint": self.certificate_fingerprint,
                 }
                 try:
                     sock.sendto(
@@ -166,9 +179,35 @@ class DiscoveryService:
             tcp_port=tcp_port,
             status=str(message.get("status", "online")),
             last_seen=time.time(),
+            tls_enabled=bool(message.get("tls_enabled", False)),
+            certificate_fingerprint=(
+                str(message["certificate_fingerprint"])
+                if message.get("certificate_fingerprint")
+                else None
+            ),
         )
         with self._lock:
+            is_new = device.device_id not in self._devices
             self._devices[device.device_id] = device
+        if is_new and self.audit_store is not None:
+            self.audit_store.record_event(
+                "device_online",
+                source_ip=device.ip,
+                device_id=device.device_id,
+                details={
+                    "device_name": device.device_name,
+                    "tls_enabled": device.tls_enabled,
+                },
+            )
+        if is_new and self.event_callback is not None:
+            self.event_callback(
+                "device_online",
+                {
+                    "device_id": device.device_id,
+                    "device_name": device.device_name,
+                    "ip": device.ip,
+                },
+            )
 
     def _purge_stale_devices(self) -> None:
         cutoff = time.time() - self.stale_after
@@ -179,4 +218,20 @@ class DiscoveryService:
                 if device.last_seen < cutoff
             ]
             for device_id in stale_ids:
-                del self._devices[device_id]
+                device = self._devices.pop(device_id)
+                if self.audit_store is not None:
+                    self.audit_store.record_event(
+                        "device_offline",
+                        source_ip=device.ip,
+                        device_id=device.device_id,
+                        details={"device_name": device.device_name},
+                    )
+                if self.event_callback is not None:
+                    self.event_callback(
+                        "device_offline",
+                        {
+                            "device_id": device.device_id,
+                            "device_name": device.device_name,
+                            "ip": device.ip,
+                        },
+                    )

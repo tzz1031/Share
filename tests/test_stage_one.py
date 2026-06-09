@@ -34,6 +34,8 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(config.udp_port, 9100)
             self.assertEqual(config.tcp_port, 9101)
             self.assertEqual(config.shared_folder, Path(tmp) / "received")
+            self.assertTrue(config.sync_enabled)
+            self.assertEqual(config.sync_interval_seconds, 10.0)
             self.assertTrue(config.shared_folder.is_dir())
 
 

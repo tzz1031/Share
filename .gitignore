@@ -8,6 +8,12 @@ wheels/
 *.egg-info/
 .eggs/
 
+# Frontend dependencies and test/build caches
+node_modules/
+*.tsbuildinfo
+test-results/
+playwright-report/
+
 # Virtual environments and local environment variables
 .venv/
 venv/
@@ -29,6 +35,13 @@ ENV/
 coverage.xml
 htmlcov/
 
+# Frontend dependencies, builds, and browser test output
+node_modules/
+frontend/dist/
+frontend/playwright-report/
+frontend/test-results/
+*.tsbuildinfo
+
 # IDE and editor settings
 .idea/
 .vscode/
@@ -46,6 +59,8 @@ Desktop.ini
 shared_folder/*
 !shared_folder/.gitkeep
 *.part
+.incoming-*.state.json
+.lan-sync/
 *.tmp
 *.log
 

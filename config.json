@@ -5,5 +5,15 @@
   "broadcast_ip": "255.255.255.255",
   "shared_folder": "./shared_folder",
   "chunk_size": 1048576,
-  "enable_tls": false
+  "enable_tls": true,
+  "sync_enabled": true,
+  "sync_interval_seconds": 10,
+  "agent_api_url": "https://api.deepseek.com",
+  "agent_model": "deepseek-v4-flash",
+  "agent_timeout_seconds": 20,
+  "security_audit_interval_seconds": 600,
+  "audit_log_retention_days": 30,
+  "shared_size_risk_bytes": 10737418240,
+  "shared_file_count_risk": 10000,
+  "web_port": 8765
 }
