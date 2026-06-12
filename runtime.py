@@ -12,9 +12,10 @@ from typing import Any
 
 from agents import (
     AgentResult,
+    AgentModelClient,
     ConflictAnalysisAgent,
     ConnectionDiagnosticAgent,
-    DeepSeekClient,
+    ReActSyncAgent,
     SecurityAuditAgent,
     SecurityAuditService,
 )
@@ -44,6 +45,7 @@ IMMEDIATE_FIELDS = {
     "sync_enabled",
     "sync_interval_seconds",
     "agent_api_url",
+    "agent_provider",
     "agent_model",
     "agent_timeout_seconds",
     "security_audit_interval_seconds",
@@ -428,11 +430,8 @@ class AppRuntime:
             audit_store=self.audit_store,
             event_callback=self._publish_event,
         )
-        self.deepseek = DeepSeekClient(
-            base_url=self.config.agent_api_url,
-            model=self.config.agent_model,
-            timeout_seconds=self.config.agent_timeout_seconds,
-        )
+        self.agent_model = AgentModelClient(self.config)
+        self.deepseek = self.agent_model
         self.connection_agent = ConnectionDiagnosticAgent(
             discovery=self.discovery,
             tcp_server=self.tcp_server,
@@ -457,6 +456,7 @@ class AppRuntime:
             interval_seconds=self.config.security_audit_interval_seconds,
         )
         self.transfers = TransferTaskManager(self)
+        self.react_agent = ReActSyncAgent(self)
 
     def _publish_event(
         self,
@@ -758,7 +758,7 @@ class AppRuntime:
         else:
             raise ValueError("unknown agent")
         if enhance:
-            result = self.deepseek.enhance(result)
+            result = self.agent_model.enhance(result)
         return agent_payload(result)
 
     def settings_payload(self) -> dict[str, Any]:
@@ -770,6 +770,9 @@ class AppRuntime:
             "immediate_fields": sorted(IMMEDIATE_FIELDS),
             "deepseek_api_key_configured": bool(
                 os.environ.get("DEEPSEEK_API_KEY", "").strip()
+            ),
+            "openai_api_key_configured": bool(
+                os.environ.get("OPENAI_API_KEY", "").strip()
             ),
         }
 
@@ -837,14 +840,13 @@ class AppRuntime:
             self.security_agent.file_count_risk = int(
                 changes["shared_file_count_risk"]
             )
-        if "agent_api_url" in changes:
-            self.deepseek.base_url = str(changes["agent_api_url"]).rstrip("/")
-        if "agent_model" in changes:
-            self.deepseek.model = str(changes["agent_model"])
-        if "agent_timeout_seconds" in changes:
-            self.deepseek.timeout_seconds = float(
-                changes["agent_timeout_seconds"]
-            )
+        if {
+            "agent_api_url",
+            "agent_provider",
+            "agent_model",
+            "agent_timeout_seconds",
+        } & changes.keys():
+            self.agent_model.config = replace(self.config, **changes)
 
 
 def config_payload(config: AppConfig) -> dict[str, Any]:

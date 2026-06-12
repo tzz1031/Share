@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentsPage, DevicesPage, SyncPage } from "./App";
 import { api, uploadFile } from "./api";
-import type { AgentResult, Device, RuntimeStatus } from "./types";
+import type { AgentRun, Device, RuntimeStatus } from "./types";
 
 vi.mock("./api", () => ({
   api: vi.fn(),
@@ -49,17 +49,52 @@ const runtime: RuntimeStatus = {
   pending_restart: false
 };
 
-const agentResult: AgentResult = {
-  agent: "security",
-  summary: "安全状态正常",
-  severity: "info",
-  evidence: ["TLS 已启用"],
-  causes: [],
-  recommendations: [],
-  facts: {},
-  enhanced: false,
-  enhancement_note: "",
-  source: "local"
+const agentRun: AgentRun = {
+  run_id: "run-123",
+  thread_id: "thread-123",
+  request: "同步 PC-B 的 notes 文件夹",
+  status: "waiting_approval",
+  plan_id: "plan-123",
+  report: "",
+  error: "",
+  created_at_ns: Date.now() * 1_000_000,
+  updated_at_ns: Date.now() * 1_000_000,
+  messages: [{ role: "user", content: "同步 PC-B 的 notes 文件夹" }],
+  steps: [
+    {
+      created_at_ns: Date.now() * 1_000_000,
+      kind: "tool",
+      name: "compare_file_indexes",
+      status: "success",
+      input: { device_id: "peer-123456789", path_prefix: "notes" },
+      output: { upload: 1 }
+    }
+  ],
+  plan: {
+    plan_id: "plan-123",
+    device_id: "peer-123456789",
+    device_name: "PC-B",
+    path_prefix: "notes",
+    counts: { upload: 1, download: 0, conflict: 0, delete_report: 0 },
+    total_bytes: 12,
+    risks: [],
+    status: "waiting_approval",
+    verification: null,
+    actions: [
+      {
+        action_id: "action-1",
+        direction: "upload",
+        relative_path: "notes/a.txt",
+        bytes: 12,
+        reason: "LOCAL_ONLY",
+        executable: true,
+        status: "pending",
+        transferred_bytes: 0,
+        error_code: "",
+        error_message: ""
+      }
+    ]
+  }
 };
 
 describe("LANSync console pages", () => {
@@ -125,14 +160,20 @@ describe("LANSync console pages", () => {
     );
   });
 
-  it("recovers from an Agent request error", async () => {
-    apiMock
-      .mockRejectedValueOnce(new Error("DeepSeek 暂时不可用"))
-      .mockResolvedValueOnce(agentResult);
+  it("creates and approves a ReAct sync plan", async () => {
+    apiMock.mockResolvedValue(agentRun);
     render(<AgentsPage notify={notify} />);
-    fireEvent.click(screen.getAllByRole("button", { name: "运行 Agent" })[0]);
-    expect(await screen.findByText("DeepSeek 暂时不可用")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "重试" }));
-    expect(await screen.findByText("安全状态正常")).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("textbox", { name: "Agent 任务" }), {
+      target: { value: "同步 PC-B 的 notes 文件夹" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "发送任务" }));
+    expect(await screen.findByText("等待执行审批")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "批准并执行" }));
+    await waitFor(() =>
+      expect(apiMock).toHaveBeenCalledWith(
+        "/api/agent/runs/run-123/decision",
+        expect.objectContaining({ method: "POST" })
+      )
+    );
   });
 });

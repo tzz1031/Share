@@ -150,7 +150,7 @@ def _send_prepared_file(
             except TimeoutError as exc:
                 raise TransferError(
                     "PROTOCOL_INCOMPATIBLE",
-                    "接收端未返回阶段六握手响应，可能仍在运行旧版本。",
+                    "接收端未返回阶段七握手响应，可能仍在运行旧版本。",
                 ) from exc
             finally:
                 sock.settimeout(timeout)
@@ -158,7 +158,7 @@ def _send_prepared_file(
             if ready.get("protocol_version") != PROTOCOL_VERSION:
                 raise TransferError(
                     "PROTOCOL_INCOMPATIBLE",
-                    "接收端协议版本不兼容，请将两端都升级到阶段六。",
+                    "接收端协议版本不兼容，请将两端都升级到阶段七。",
                 )
             if ready.get("type") in TERMINAL_SYNC_RESPONSES:
                 if ready.get("status") != "success":

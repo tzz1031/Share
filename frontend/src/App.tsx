@@ -49,6 +49,7 @@ import {
 import { api, eventSocket, uploadFile } from "./api";
 import type {
   AgentResult,
+  AgentRun,
   AuditAlert,
   AuditEvent,
   Conflict,
@@ -69,6 +70,8 @@ type PageId =
   | "security"
   | "agents"
   | "logs";
+
+type BadgeTone = "primary" | "success" | "warning" | "danger" | "muted";
 
 const NAV_ITEMS: Array<{
   id: PageId;
@@ -205,7 +208,7 @@ export default function App() {
     security: (
       <SecurityPage liveVersion={liveVersion} notify={showNotice} />
     ),
-    agents: <AgentsPage notify={showNotice} />,
+    agents: <AgentsPage liveVersion={liveVersion} notify={showNotice} />,
     logs: <LogsSettingsPage liveVersion={liveVersion} notify={showNotice} />
   }[page];
 
@@ -1090,93 +1093,364 @@ function SecurityPage({
   );
 }
 
-export function AgentsPage({ notify }: { notify: (message: string) => void }) {
-  const [result, setResult] = useState<AgentResult | null>(null);
-  const [running, setRunning] = useState("");
+export function AgentsPage({
+  liveVersion = 0,
+  notify
+}: {
+  liveVersion?: number;
+  notify: (message: string) => void;
+}) {
+  const [run, setRun] = useState<AgentRun | null>(null);
+  const [message, setMessage] = useState("");
+  const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
-  const [failedAgent, setFailedAgent] = useState("");
   const agents = [
     {
       id: "connection",
       title: "连接诊断",
       icon: Activity,
-      description: "检查本机 IP、UDP 监听、TCP 服务、网段与 TLS 探测。"
+      description: "检查在线设备、TCP、网段与 TLS。",
+      prompt: "诊断当前可用远端设备的连接状态，并给出处理建议。"
     },
     {
       id: "conflict",
       title: "冲突分析",
       icon: FileDiff,
-      description: "解释共同基线、双端变化、主版本和冲突副本。"
+      description: "解释双端变化和冲突副本。",
+      prompt: "分析当前未处理的文件冲突，不要执行文件传输。"
     },
     {
       id: "security",
       title: "安全审计",
       icon: ShieldCheck,
-      description: "审查 TLS、授权范围、共享规模、证书和异常访问。"
+      description: "审查 TLS、授权和异常访问。",
+      prompt: "运行一次安全审计，说明风险和建议，不要执行文件传输。"
     }
   ];
-  const run = async (id: string) => {
-    setRunning(id);
+
+  const refresh = useCallback(async (runId: string) => {
+    const response = await api<AgentRun>(`/api/agent/runs/${runId}`);
+    setRun(response);
+    return response;
+  }, []);
+
+  useEffect(() => {
+    if (!run || ["completed", "rejected", "failed"].includes(run.status)) return;
+    const timer = window.setInterval(() => {
+      void refresh(run.run_id).catch(() => undefined);
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [run?.run_id, run?.status, liveVersion, refresh]);
+
+  const startRun = async (request: string) => {
+    const trimmed = request.trim();
+    if (!trimmed) return;
+    setSubmitting(true);
     setError("");
-    setFailedAgent("");
     try {
-      const response = await api<AgentResult>(`/api/agents/${id}`, {
+      const response = await api<AgentRun>("/api/agent/runs", {
         method: "POST",
-        body: JSON.stringify({ enhance: true })
+        body: JSON.stringify({
+          message: trimmed,
+          thread_id: run?.thread_id || ""
+        })
       });
-      setResult(response);
-      notify(`${agents.find((item) => item.id === id)?.title}已完成`);
+      setRun(response);
+      setMessage("");
+      notify("Agent 任务已启动");
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Agent 运行失败");
-      setFailedAgent(id);
+      setError(reason instanceof Error ? reason.message : "无法启动 Agent");
     } finally {
-      setRunning("");
+      setSubmitting(false);
     }
   };
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    void startRun(message);
+  };
+
+  const decide = async (approved: boolean) => {
+    if (!run) return;
+    setSubmitting(true);
+    setError("");
+    try {
+      const response = await api<AgentRun>(
+        `/api/agent/runs/${run.run_id}/decision`,
+        {
+          method: "POST",
+          body: JSON.stringify({ approved })
+        }
+      );
+      setRun(response);
+      notify(approved ? "同步计划已批准" : "同步计划已拒绝");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "审批失败");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const selectDevice = async (deviceId: string) => {
+    if (!run) return;
+    setSubmitting(true);
+    setError("");
+    try {
+      const response = await api<AgentRun>(
+        `/api/agent/runs/${run.run_id}/decision`,
+        {
+          method: "POST",
+          body: JSON.stringify({ device_id: deviceId })
+        }
+      );
+      setRun(response);
+      notify("目标设备已选择");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "设备选择失败");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const selectionDevices = agentSelectionDevices(run);
+
   return (
     <Page>
       <PageIntro
         eyebrow="INTELLIGENCE LAYER"
-        title="智能 Agent"
-        description="始终先执行本地规则；仅在用户主动运行时尝试 DeepSeek 增强。"
+        title="ReAct 同步 Agent"
+        description="Agent 会自主查询设备和索引、生成确定性计划，并在文件传输前等待你的批准。"
       />
-      <section className="agent-grid">
-        {agents.map((agent, index) => {
+      <section className="agent-preset-grid">
+        {agents.map((agent) => {
           const Icon = agent.icon;
-          return (
-            <article className="agent-card" key={agent.id}>
-              <div className="agent-number">0{index + 1}</div>
+          return <button
+              className="agent-preset"
+              key={agent.id}
+              onClick={() => void startRun(agent.prompt)}
+              disabled={submitting}
+            >
               <Icon size={27} />
-              <h3>{agent.title}</h3>
-              <p>{agent.description}</p>
-              <Button
-                icon={running === agent.id ? LoaderCircle : Play}
-                onClick={() => run(agent.id)}
-                disabled={Boolean(running)}
-              >
-                {running === agent.id ? "分析中" : "运行 Agent"}
-              </Button>
-            </article>
-          );
+              <span><strong>{agent.title}</strong>{agent.description}</span>
+              <Play size={16} />
+            </button>;
         })}
       </section>
+
+      <section className="agent-workspace">
+        <Panel className="agent-chat">
+          <PanelTitle eyebrow="USER REQUEST" title="任务对话" />
+          <div className="agent-messages">
+            {run?.messages.map((item, index) => (
+              <article className={`agent-message ${item.role}`} key={`${item.role}-${index}`}>
+                <span>{item.role === "user" ? "你" : "Agent"}</span>
+                <p>{item.content}</p>
+              </article>
+            ))}
+            {!run && (
+              <EmptyState
+                icon={Bot}
+                title="描述一个同步任务"
+                description="例如：同步 PC-B 的 notes 文件夹。Agent 会先规划，不会直接传输。"
+              />
+            )}
+          </div>
+          <form className="agent-composer" onSubmit={submit}>
+            <textarea
+              aria-label="Agent 任务"
+              value={message}
+              onChange={(event) => setMessage(event.target.value)}
+              placeholder="输入设备名称和目录，例如：同步 PC-B 的 notes 文件夹"
+              rows={3}
+            />
+            <Button
+              type="submit"
+              icon={submitting ? LoaderCircle : Send}
+              disabled={submitting || !message.trim()}
+            >
+              {submitting ? "提交中" : "发送任务"}
+            </Button>
+          </form>
+        </Panel>
+
+        <Panel className="agent-trace">
+          <PanelTitle eyebrow="REACT TRACE" title="执行步骤" />
+          <div className="agent-run-head">
+            <Badge tone={agentStatusTone(run?.status)}>
+              {run?.status === "waiting_approval" && !run.plan
+                ? "等待选择"
+                : agentStatusLabel(run?.status)}
+            </Badge>
+            {run && <code>{run.run_id.slice(0, 12)}</code>}
+          </div>
+          <div className="agent-timeline">
+            {run?.steps.map((step, index) => (
+              <article className="agent-step" key={`${step.created_at_ns}-${index}`}>
+                <span className={`step-dot ${step.status}`} />
+                <div>
+                  <strong>{toolLabel(step.name)}</strong>
+                  <span>{step.kind} / {step.status}</span>
+                  {step.kind === "observation" && (
+                    <pre>{compactJson(step.output)}</pre>
+                  )}
+                </div>
+              </article>
+            ))}
+            {run && !run.steps.length && <p className="muted-copy">等待 Planner 启动。</p>}
+          </div>
+        </Panel>
+      </section>
+
+      {run?.status === "waiting_approval" && !run.plan && selectionDevices.length > 0 && (
+        <Panel>
+          <PanelTitle eyebrow="CLARIFICATION" title="请选择目标设备" />
+          <div className="device-choice-grid">
+            {selectionDevices.map((device) => (
+              <button
+                className="device-choice"
+                key={device.device_id}
+                onClick={() => void selectDevice(device.device_id)}
+                disabled={submitting}
+              >
+                <Laptop size={20} />
+                <span><strong>{device.device_name}</strong><code>{device.ip}</code></span>
+                <ChevronRight size={16} />
+              </button>
+            ))}
+          </div>
+        </Panel>
+      )}
+
+      {run?.plan && (
+        <Panel className="agent-plan">
+          <PanelTitle
+            eyebrow="SYNC PLAN"
+            title={`${run.plan.device_name} / ${run.plan.path_prefix || "共享目录根目录"}`}
+          />
+          <div className="plan-summary">
+            <Metric label="上传" value={String(run.plan.counts.upload || 0)} />
+            <Metric label="下载" value={String(run.plan.counts.download || 0)} />
+            <Metric label="冲突" value={String(run.plan.counts.conflict || 0)} />
+            <Metric label="删除差异" value={String(run.plan.counts.delete_report || 0)} />
+            <Metric label="传输量" value={formatBytes(run.plan.total_bytes)} />
+          </div>
+          <div className="plan-actions">
+            {run.plan.actions
+              .filter((action) => action.direction !== "same")
+              .map((action) => (
+                <div className="plan-action" key={action.action_id}>
+                  <Badge tone={actionTone(action.direction, action.status)}>
+                    {directionLabel(action.direction)}
+                  </Badge>
+                  <code>{action.relative_path}</code>
+                  <span>
+                    {action.status}
+                    {action.executable && action.bytes > 0
+                      ? ` / ${Math.round((action.transferred_bytes * 100) / action.bytes)}%`
+                      : ""}
+                  </span>
+                  {action.error_message && <small>{action.error_message}</small>}
+                </div>
+              ))}
+          </div>
+          {run.status === "waiting_approval" && (
+            <div className="approval-bar">
+              <div>
+                <strong>等待执行审批</strong>
+                <span>删除和冲突只报告；批准后仅执行上传与下载。</span>
+              </div>
+              <Button variant="ghost" icon={X} onClick={() => void decide(false)} disabled={submitting}>
+                拒绝
+              </Button>
+              <Button icon={Check} onClick={() => void decide(true)} disabled={submitting}>
+                批准并执行
+              </Button>
+            </div>
+          )}
+        </Panel>
+      )}
+
       {error && (
         <ErrorState
           message={error}
-          retry={() => {
-            setError("");
-            void run(failedAgent || "security");
-          }}
+          retry={() => run ? void refresh(run.run_id) : setError("")}
         />
       )}
-      {result ? (
-        <AgentResultCard result={result} expanded />
-      ) : (
-        <Panel>
-          <EmptyState icon={Bot} title="等待诊断任务" description="选择上方任一 Agent，结果将在此显示。" />
-        </Panel>
-      )}
     </Page>
+  );
+}
+
+function agentStatusLabel(status?: AgentRun["status"]): string {
+  return {
+    queued: "排队中",
+    running: "执行中",
+    waiting_approval: "等待审批",
+    completed: "已完成",
+    rejected: "已拒绝",
+    failed: "失败"
+  }[status || "queued"];
+}
+
+function agentStatusTone(status?: AgentRun["status"]): BadgeTone {
+  if (status === "completed") return "success";
+  if (status === "failed") return "danger";
+  if (status === "waiting_approval" || status === "rejected") return "warning";
+  return "primary";
+}
+
+function toolLabel(name: string): string {
+  return {
+    planner: "Agent Planner",
+    build_plan: "生成同步计划",
+    human_decision: "人工审批",
+    execute_sync_plan: "执行同步计划",
+    verify_sync_plan: "验证传输",
+    final_report: "最终报告",
+    model_fallback: "本地规划降级"
+  }[name] || name;
+}
+
+function compactJson(value: unknown): string {
+  const encoded = JSON.stringify(value, null, 2);
+  return encoded.length > 420 ? `${encoded.slice(0, 420)}…` : encoded;
+}
+
+function directionLabel(direction: string): string {
+  return {
+    upload: "上传",
+    download: "下载",
+    conflict: "冲突",
+    delete_report: "删除差异",
+    same: "一致"
+  }[direction] || direction;
+}
+
+function actionTone(direction: string, status: string): BadgeTone {
+  if (status === "failed" || direction === "conflict") return "danger";
+  if (direction === "delete_report") return "warning";
+  if (status === "success") return "success";
+  return "primary";
+}
+
+function agentSelectionDevices(run: AgentRun | null): Array<{
+  device_id: string;
+  device_name: string;
+  ip: string;
+}> {
+  if (!run) return [];
+  const step = [...run.steps]
+    .reverse()
+    .find((item) => item.kind === "clarification" && item.name === "select_device");
+  if (!step || typeof step.output !== "object" || step.output === null) return [];
+  const devices = (step.output as { devices?: unknown }).devices;
+  if (!Array.isArray(devices)) return [];
+  return devices.filter(
+    (item): item is { device_id: string; device_name: string; ip: string } =>
+      typeof item === "object" &&
+      item !== null &&
+      typeof (item as { device_id?: unknown }).device_id === "string" &&
+      typeof (item as { device_name?: unknown }).device_name === "string" &&
+      typeof (item as { ip?: unknown }).ip === "string"
   );
 }
 
@@ -1400,6 +1674,7 @@ function SettingsPanel({
     ["audit_log_retention_days", "日志保留天数", "number"],
     ["shared_size_risk_bytes", "共享大小风险阈值", "number"],
     ["shared_file_count_risk", "共享文件数风险阈值", "number"],
+    ["agent_provider", "Agent 模型提供商", "text"],
     ["agent_api_url", "Agent API 地址", "text"],
     ["agent_model", "Agent 模型", "text"],
     ["agent_timeout_seconds", "Agent 超时（秒）", "number"]
@@ -1523,6 +1798,10 @@ function PanelTitle({
   );
 }
 
+function Metric({ label, value }: { label: string; value: string }) {
+  return <div className="plan-metric"><span>{label}</span><strong>{value}</strong></div>;
+}
+
 function Button({
   children,
   icon: Icon,
@@ -1549,7 +1828,7 @@ function Badge({
   icon: Icon
 }: {
   children: ReactNode;
-  tone?: "primary" | "success" | "warning" | "danger" | "muted";
+  tone?: BadgeTone;
   icon?: typeof Gauge;
 }) {
   return (

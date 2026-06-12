@@ -333,6 +333,46 @@ def create_app(
     async def run_security_audit():
         return runtime.run_agent("security")
 
+    @app.post("/api/agent/runs")
+    async def create_agent_run(body: dict[str, Any]):
+        try:
+            return runtime.react_agent.create_run(
+                str(body.get("message", "")),
+                str(body.get("thread_id", "")),
+            )
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @app.get("/api/agent/runs/{run_id}")
+    async def get_agent_run(run_id: str):
+        payload = runtime.react_agent.get_run(run_id)
+        if payload is None:
+            raise HTTPException(404, "Agent 任务不存在。")
+        return payload
+
+    @app.post("/api/agent/runs/{run_id}/decision")
+    async def decide_agent_run(run_id: str, body: dict[str, Any]):
+        approved = body.get("approved")
+        device_id = str(body.get("device_id", "")).strip()
+        if approved is not None and type(approved) is not bool:
+            raise HTTPException(422, "approved 必须是布尔值。")
+        if approved is None and not device_id:
+            raise HTTPException(422, "需要 approved 或 device_id。")
+        try:
+            return runtime.react_agent.decide(
+                run_id,
+                approved=approved,
+                device_id=device_id,
+            )
+        except KeyError as exc:
+            raise HTTPException(404, "Agent 任务不存在。") from exc
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @app.get("/api/agent/threads")
+    async def get_agent_threads(limit: int = 50):
+        return {"items": runtime.react_agent.list_threads(limit)}
+
     @app.post("/api/agents/{agent_name}")
     async def run_agent(agent_name: str, body: dict[str, Any] | None = None):
         body = body or {}

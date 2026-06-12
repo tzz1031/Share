@@ -234,6 +234,8 @@ class TCPFileServer:
                         self._handle_pair_request(transport, request, addr)
                     elif request.get("type") == "INDEX_REQUEST":
                         self._handle_index_request(transport, request, addr)
+                    elif request.get("type") == "FILE_FETCH_REQUEST":
+                        self._handle_file_fetch_request(transport, request, addr)
                     else:
                         outcome = self._receive_file_request(transport, addr, request)
                         if isinstance(outcome, dict):
@@ -418,7 +420,7 @@ class TCPFileServer:
         if request.get("protocol_version") != PROTOCOL_VERSION:
             raise TransferError(
                 "PROTOCOL_INCOMPATIBLE",
-                "协议版本不兼容，请将两端都升级到阶段六。",
+                "协议版本不兼容，请将两端都升级到阶段七。",
             )
         if self.file_index is None:
             raise TransferError("SYNC_DISABLED", "接收端未启用文件夹同步。")
@@ -470,6 +472,135 @@ class TCPFileServer:
             details={"entry_count": len(entries)},
         )
 
+    def _handle_file_fetch_request(
+        self,
+        conn: socket.socket,
+        request: dict[str, Any],
+        addr: tuple[str, int] = ("", 0),
+    ) -> None:
+        if request.get("protocol_version") != PROTOCOL_VERSION:
+            raise TransferError(
+                "PROTOCOL_INCOMPATIBLE",
+                "协议版本不兼容，请将两端都升级到阶段七。",
+            )
+        if self.file_index is None:
+            raise TransferError("SYNC_DISABLED", "接收端未启用文件夹同步。")
+
+        requester = self._authenticate_request(
+            request,
+            PERMISSION_READ,
+            source_ip=addr[0],
+        )
+        try:
+            relative_path = normalize_relative_path(request["relative_path"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise TransferError("INVALID_PATH", f"下载路径无效：{exc}") from exc
+
+        entry = self.file_index.refresh_path(relative_path)
+        if entry is None or entry.status != STATUS_ACTIVE:
+            raise TransferError("FILE_NOT_FOUND", "远端文件不存在或已被删除。")
+        expected_hash = request.get("expected_hash")
+        if expected_hash is not None and expected_hash != entry.file_hash:
+            raise TransferError("PLAN_STALE", "远端文件已发生变化，请重新生成同步计划。")
+
+        source = destination_for(self.shared_folder, relative_path)
+        try:
+            stat = source.stat()
+            signature = (
+                stat.st_dev,
+                stat.st_ino,
+                stat.st_size,
+                stat.st_mtime_ns,
+            )
+        except OSError as exc:
+            raise TransferError("FILE_READ_ERROR", f"无法读取远端文件：{exc}") from exc
+
+        offset = request.get("offset", 0)
+        if (
+            type(offset) is not int
+            or offset < 0
+            or offset > entry.file_size
+            or (offset != entry.file_size and offset % self.chunk_size != 0)
+        ):
+            raise TransferError("INVALID_OFFSET", "断点续传偏移量无效。")
+
+        send_json_message(
+            conn,
+            {
+                "type": "FILE_FETCH_BEGIN",
+                "protocol_version": PROTOCOL_VERSION,
+                "entry": entry.to_payload(),
+                "chunk_size": self.chunk_size,
+                "offset": offset,
+            },
+        )
+        bytes_sent = offset
+        try:
+            with source.open("rb") as input_file:
+                input_file.seek(offset)
+                chunk_index = offset // self.chunk_size
+                while bytes_sent < entry.file_size:
+                    chunk = input_file.read(
+                        min(self.chunk_size, entry.file_size - bytes_sent)
+                    )
+                    if not chunk:
+                        raise TransferError(
+                            "FILE_CHANGED",
+                            "远端文件在下载过程中被截断。",
+                        )
+                    send_json_message(
+                        conn,
+                        {
+                            "type": "FILE_FETCH_CHUNK",
+                            "chunk_index": chunk_index,
+                            "chunk_size": len(chunk),
+                            "chunk_hash": hashlib.sha256(chunk).hexdigest(),
+                        },
+                    )
+                    conn.sendall(chunk)
+                    acknowledgement = recv_json_message(conn)
+                    if (
+                        acknowledgement.get("type") != "FILE_FETCH_ACK"
+                        or acknowledgement.get("chunk_index") != chunk_index
+                        or acknowledgement.get("bytes_received")
+                        != bytes_sent + len(chunk)
+                    ):
+                        raise TransferError(
+                            "INVALID_RESPONSE",
+                            "下载客户端未正确确认文件分块。",
+                        )
+                    bytes_sent += len(chunk)
+                    chunk_index += 1
+        except OSError as exc:
+            raise TransferError("FILE_READ_ERROR", f"读取远端文件失败：{exc}") from exc
+
+        current = source.stat()
+        current_signature = (
+            current.st_dev,
+            current.st_ino,
+            current.st_size,
+            current.st_mtime_ns,
+        )
+        if current_signature != signature or calculate_sha256(source) != entry.file_hash:
+            raise TransferError("FILE_CHANGED", "远端文件在下载过程中发生了变化。")
+        send_json_message(
+            conn,
+            {
+                "type": "FILE_FETCH_END",
+                "protocol_version": PROTOCOL_VERSION,
+                "bytes_sent": bytes_sent,
+                "file_hash": entry.file_hash,
+            },
+        )
+        self._audit(
+            "file_fetched",
+            source_ip=addr[0],
+            device_id=requester.device_id if requester is not None else "",
+            request_type="FILE_FETCH_REQUEST",
+            bytes_count=max(0, bytes_sent - offset),
+            details={"relative_path": relative_path, "resumed_at": offset},
+        )
+
     def _handle_diagnostic_ping(
         self,
         conn: socket.socket,
@@ -479,7 +610,7 @@ class TCPFileServer:
         if request.get("protocol_version") != PROTOCOL_VERSION:
             raise TransferError(
                 "PROTOCOL_INCOMPATIBLE",
-                "协议版本不兼容，请将两端都升级到阶段六。",
+                "协议版本不兼容，请将两端都升级到阶段七。",
             )
         send_json_message(
             conn,
@@ -504,7 +635,7 @@ class TCPFileServer:
         if request.get("protocol_version") != PROTOCOL_VERSION:
             raise TransferError(
                 "PROTOCOL_INCOMPATIBLE",
-                "协议版本不兼容，请将两端都升级到阶段六。",
+                "协议版本不兼容，请将两端都升级到阶段七。",
             )
         if self.security_store is None:
             raise TransferError("AUTH_DISABLED", "接收端未启用设备配对。")
@@ -1101,7 +1232,7 @@ class TCPFileServer:
         if metadata.get("protocol_version") != PROTOCOL_VERSION:
             raise TransferError(
                 "PROTOCOL_INCOMPATIBLE",
-                "协议版本不兼容，请将发送端和接收端都升级到阶段六。",
+                "协议版本不兼容，请将发送端和接收端都升级到阶段七。",
             )
         if metadata.get("hash_algorithm") != HASH_ALGORITHM:
             raise TransferError("UNSUPPORTED_HASH", "仅支持 SHA-256 哈希算法。")

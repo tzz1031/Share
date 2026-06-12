@@ -77,7 +77,8 @@ test("navigates all seven console areas", async ({ page }) => {
         pending_restart: false,
         restart_fields: [],
         immediate_fields: [],
-        deepseek_api_key_configured: false
+        deepseek_api_key_configured: false,
+        openai_api_key_configured: false
       }
     };
     const key = Object.keys(payload).find((candidate) => path === candidate);
@@ -88,7 +89,7 @@ test("navigates all seven console areas", async ({ page }) => {
   });
 
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "总览" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "总览", level: 1 })).toBeVisible();
   for (const name of [
     "设备",
     "同步中心",
@@ -98,7 +99,9 @@ test("navigates all seven console areas", async ({ page }) => {
     "日志与设置"
   ]) {
     await page.getByRole("button", { name }).click();
-    await expect(page.getByRole("heading", { name, exact: true })).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name, exact: true, level: 1 })
+    ).toBeVisible();
   }
   await expect.poll(() => socketConnections).toBeGreaterThan(1);
 });

@@ -30,6 +30,67 @@ export interface AgentResult {
   source: "local" | "deepseek";
 }
 
+export type AgentRunStatus =
+  | "queued"
+  | "running"
+  | "waiting_approval"
+  | "completed"
+  | "rejected"
+  | "failed";
+
+export interface AgentStep {
+  created_at_ns: number;
+  kind: string;
+  name: string;
+  status: string;
+  input: unknown;
+  output: unknown;
+}
+
+export interface SyncPlanAction {
+  action_id: string;
+  direction: "upload" | "download" | "same" | "conflict" | "delete_report";
+  relative_path: string;
+  bytes: number;
+  reason: string;
+  executable: boolean;
+  status: "pending" | "running" | "success" | "failed" | "reported";
+  transferred_bytes: number;
+  error_code: string;
+  error_message: string;
+}
+
+export interface SyncPlan {
+  plan_id: string;
+  device_id: string;
+  device_name: string;
+  path_prefix: string;
+  counts: Record<string, number>;
+  total_bytes: number;
+  risks: string[];
+  status: string;
+  actions: SyncPlanAction[];
+  verification: {
+    success: boolean;
+    checks: Array<Record<string, unknown>>;
+  } | null;
+}
+
+export interface AgentRun {
+  run_id: string;
+  thread_id: string;
+  request: string;
+  status: AgentRunStatus;
+  plan_id: string | null;
+  report: string;
+  error: string;
+  created_at_ns: number;
+  updated_at_ns: number;
+  steps: AgentStep[];
+  plan: SyncPlan | null;
+  messages: Array<{ role: "user" | "assistant"; content: string }>;
+}
+
 export interface AuditEvent {
   event_id: number;
   created_at_ns: number;
@@ -152,4 +213,5 @@ export interface SettingsData {
   restart_fields: string[];
   immediate_fields: string[];
   deepseek_api_key_configured: boolean;
+  openai_api_key_configured: boolean;
 }

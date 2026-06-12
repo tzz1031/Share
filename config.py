@@ -17,6 +17,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "sync_enabled": True,
     "sync_interval_seconds": 10.0,
     "agent_api_url": "https://api.deepseek.com",
+    "agent_provider": "deepseek",
     "agent_model": "deepseek-v4-flash",
     "agent_timeout_seconds": 20.0,
     "security_audit_interval_seconds": 600.0,
@@ -39,6 +40,7 @@ class AppConfig:
     sync_enabled: bool
     sync_interval_seconds: float
     agent_api_url: str
+    agent_provider: str
     agent_model: str
     agent_timeout_seconds: float
     security_audit_interval_seconds: float
@@ -69,6 +71,9 @@ class AppConfig:
             raise ValueError("audit retention and risk thresholds must be positive")
         if not 1 <= web_port <= 65535:
             raise ValueError("web_port must be between 1 and 65535")
+        agent_provider = str(merged["agent_provider"]).lower()
+        if agent_provider not in {"deepseek", "openai"}:
+            raise ValueError("agent_provider must be deepseek or openai")
 
         return cls(
             device_name=str(merged["device_name"]),
@@ -81,6 +86,7 @@ class AppConfig:
             sync_enabled=bool(merged["sync_enabled"]),
             sync_interval_seconds=sync_interval_seconds,
             agent_api_url=str(merged["agent_api_url"]),
+            agent_provider=agent_provider,
             agent_model=str(merged["agent_model"]),
             agent_timeout_seconds=agent_timeout_seconds,
             security_audit_interval_seconds=audit_interval,

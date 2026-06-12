@@ -228,6 +228,26 @@ class WebConsoleTests(unittest.TestCase):
         self.assertEqual(task["status"], "success")
         self.assertEqual(task["progress"], 100.0)
 
+    def test_agent_run_api_validates_requests_and_missing_runs(self) -> None:
+        empty = self.request(
+            "POST",
+            "/api/agent/runs",
+            headers={CSRF_HEADER: self.csrf},
+            json_body={"message": ""},
+        )
+        self.assertEqual(empty.status_code, 422)
+
+        missing = self.request("GET", "/api/agent/runs/missing")
+        self.assertEqual(missing.status_code, 404)
+
+        invalid_decision = self.request(
+            "POST",
+            "/api/agent/runs/missing/decision",
+            headers={CSRF_HEADER: self.csrf},
+            json_body={"approved": "yes"},
+        )
+        self.assertEqual(invalid_decision.status_code, 422)
+
     def test_log_filters_accept_time_range(self) -> None:
         first = self.runtime.audit_store.record_event(
             "pairing_succeeded",

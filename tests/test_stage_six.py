@@ -6,13 +6,16 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
+from langchain_core.messages import AIMessage
+
 from agents import (
+    AgentModelClient,
     AgentResult,
     ConflictAnalysisAgent,
     ConnectionDiagnosticAgent,
-    DeepSeekClient,
     SecurityAuditAgent,
 )
 from audit import AuditStore
@@ -424,46 +427,43 @@ class AgentTests(unittest.TestCase):
                 "private_path": "/secret/path",
             },
         )
-        client = DeepSeekClient()
+        client = AgentModelClient(
+            SimpleNamespace(
+                agent_provider="deepseek",
+                agent_api_url="https://api.deepseek.com",
+                agent_model="deepseek-chat",
+                agent_timeout_seconds=20,
+            )
+        )
         with patch.dict(os.environ, {}, clear=True):
             fallback = client.enhance(result)
         self.assertFalse(fallback.enhanced)
         self.assertIn("未设置", fallback.enhancement_note)
 
-        response_body = {
-            "choices": [
-                {
-                    "message": {
-                        "content": json.dumps(
-                            {
-                                "summary": "enhanced",
-                                "causes": ["cause"],
-                                "recommendations": ["fix"],
-                            }
-                        )
-                    }
-                }
-            ]
-        }
+        class FakeModel:
+            def __init__(self):
+                self.messages = []
 
-        class FakeResponse:
-            def __enter__(self):
-                return self
+            def invoke(self, messages):
+                self.messages = messages
+                return AIMessage(
+                    content=json.dumps(
+                        {
+                            "summary": "enhanced",
+                            "causes": ["cause"],
+                            "recommendations": ["fix"],
+                        }
+                    )
+                )
 
-            def __exit__(self, *args):
-                return False
-
-            def read(self):
-                return json.dumps(response_body).encode("utf-8")
-
-        with (
-            patch.dict(os.environ, {"DEEPSEEK_API_KEY": "test-key"}, clear=True),
-            patch("urllib.request.urlopen", return_value=FakeResponse()) as urlopen,
+        fake = FakeModel()
+        with patch(
+            "agents.model_factory.create_chat_model",
+            return_value=fake,
         ):
             enhanced = client.enhance(result)
 
-        sent = json.loads(urlopen.call_args.args[0].data.decode("utf-8"))
-        user_payload = json.loads(sent["messages"][1]["content"])
+        user_payload = json.loads(fake.messages[1].content)
         self.assertNotIn("private_path", user_payload["facts"])
         self.assertTrue(enhanced.enhanced)
         self.assertEqual(enhanced.summary, "enhanced")
